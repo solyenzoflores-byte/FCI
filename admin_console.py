@@ -7,11 +7,17 @@ Permite actualizar datos desde la consola sin interfaz web
 import json
 import os
 from datetime import datetime, date
-from typing import Dict, List
+from typing import Dict, List, Optional
 import argparse
+import getpass
+
+from security import generate_salt, hash_password
 
 class FondoAdminConsole:
     def __init__(self, archivo_datos='fondo_datos.json'):
+        if not os.path.isabs(archivo_datos):
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            archivo_datos = os.path.join(base_dir, archivo_datos)
         self.archivo_datos = archivo_datos
         self.datos = self.cargar_datos()
     
@@ -21,6 +27,10 @@ class FondoAdminConsole:
             try:
                 with open(self.archivo_datos, 'r', encoding='utf-8') as f:
                     datos = json.load(f)
+                estructura = self.estructura_inicial()
+                for clave, valor_default in estructura.items():
+                    if clave not in datos:
+                        datos[clave] = valor_default
                 return datos
             except Exception as e:
                 print(f"❌ Error cargando datos: {e}")
@@ -38,7 +48,8 @@ class FondoAdminConsole:
             'valor_cuotaparte': 1000.0,
             'total_cuotapartes': 0,
             'composicion_fondo': {},
-            'distribucion_activos': {}
+            'distribucion_activos': {},
+            'usuarios': {}
         }
     
     def guardar_datos(self):
@@ -198,6 +209,172 @@ class FondoAdminConsole:
         
         print(f"✅ Rescate registrado: {cliente} - ${monto:,.2f} ({cuotapartes_a_retirar:.4f} cuotapartes)")
         return True
+
+    # -------------------------------------------------------------
+    # Gestión de usuarios para acceso web
+    # -------------------------------------------------------------
+
+    def crear_usuario(self, username: str, password: str, rol: str = 'cliente',
+                      clientes: Optional[List[str]] = None) -> bool:
+        """Crea un nuevo usuario de acceso web."""
+        clientes = clientes or []
+
+        rol = rol.lower()
+        if rol not in {'admin', 'cliente'}:
+            print("❌ Rol inválido. Use 'admin' o 'cliente'")
+            return False
+
+        if username in self.datos['usuarios']:
+            print(f"❌ El usuario {username} ya existe")
+            return False
+
+        if rol != 'admin':
+            if not clientes:
+                print("❌ Debe asociar al menos un cliente al usuario")
+                return False
+            clientes_validos = [c for c in clientes if c in self.datos['clientes']]
+            if len(clientes_validos) != len(clientes):
+                print("❌ Algunos clientes no existen en el fondo")
+                print(f"   Clientes válidos: {', '.join(self.datos['clientes'].keys())}")
+                return False
+        else:
+            clientes_validos = []
+
+        salt = generate_salt()
+        password_hash = hash_password(password, salt)
+
+        self.datos['usuarios'][username] = {
+            'rol': rol,
+            'salt': salt,
+            'password_hash': password_hash,
+            'clientes': clientes_validos,
+        }
+
+        print(f"✅ Usuario {username} creado correctamente")
+        if rol == 'admin':
+            print("   • Rol administrador (acceso a todos los clientes)")
+        else:
+            print(f"   • Clientes asociados: {', '.join(clientes_validos)}")
+        return True
+
+    def listar_usuarios(self):
+        """Muestra la lista de usuarios configurados"""
+        usuarios = self.datos.get('usuarios', {})
+        if not usuarios:
+            print("⚠️  No hay usuarios configurados")
+            return
+
+        print("\n👥 USUARIOS REGISTRADOS:")
+        for username, info in usuarios.items():
+            rol = info.get('rol', 'cliente')
+            if rol == 'admin':
+                print(f"  • {username} (admin)")
+            else:
+                clientes = info.get('clientes', [])
+                clientes_txt = ', '.join(clientes) if clientes else 'Sin clientes asociados'
+                print(f"  • {username} (cliente) -> {clientes_txt}")
+
+    def actualizar_password(self, username: str, nuevo_password: str) -> bool:
+        """Actualiza la contraseña de un usuario"""
+        usuario = self.datos['usuarios'].get(username)
+        if not usuario:
+            print(f"❌ Usuario {username} no existe")
+            return False
+
+        salt = generate_salt()
+        usuario['salt'] = salt
+        usuario['password_hash'] = hash_password(nuevo_password, salt)
+        print(f"✅ Contraseña actualizada para {username}")
+        return True
+
+    def actualizar_clientes_usuario(self, username: str, clientes: List[str]) -> bool:
+        """Actualiza la lista de clientes asociados a un usuario"""
+        usuario = self.datos['usuarios'].get(username)
+        if not usuario:
+            print(f"❌ Usuario {username} no existe")
+            return False
+
+        if usuario.get('rol') == 'admin':
+            print("⚠️  El usuario es administrador y ya tiene acceso total")
+            return False
+
+        clientes_validos = [c for c in clientes if c in self.datos['clientes']]
+        if len(clientes_validos) != len(clientes):
+            print("❌ Algunos clientes no existen. No se realizaron cambios")
+            print(f"   Clientes válidos: {', '.join(self.datos['clientes'].keys())}")
+            return False
+
+        usuario['clientes'] = clientes_validos
+        print(f"✅ Clientes actualizados para {username}: {', '.join(clientes_validos)}")
+        return True
+
+    def menu_usuarios(self):
+        """Menú interactivo para administrar usuarios"""
+        while True:
+            print("\n" + "-"*40)
+            print("👤 ADMINISTRACIÓN DE USUARIOS")
+            print("-"*40)
+            print("1. Crear usuario")
+            print("2. Listar usuarios")
+            print("3. Actualizar contraseña")
+            print("4. Actualizar clientes asociados")
+            print("5. Volver")
+
+            opcion = input("Seleccione una opción: ").strip()
+
+            if opcion == '1':
+                username = input("Nombre de usuario: ").strip()
+                rol = input("Rol (admin/cliente) [cliente]: ").strip() or 'cliente'
+                clientes = []
+                if rol.lower() != 'admin':
+                    if not self.datos['clientes']:
+                        print("❌ No hay clientes cargados. Cree el cliente antes de asignarlo")
+                        continue
+                    print("Clientes disponibles:", ', '.join(self.datos['clientes'].keys()))
+                    clientes_input = input("Clientes asociados (separados por coma): ").strip()
+                    clientes = [c.strip() for c in clientes_input.split(',') if c.strip()]
+                password = getpass.getpass("Contraseña: ")
+                confirmacion = getpass.getpass("Confirmar contraseña: ")
+                if password != confirmacion:
+                    print("❌ Las contraseñas no coinciden")
+                    continue
+                if self.crear_usuario(username, password, rol, clientes):
+                    self.guardar_datos()
+
+            elif opcion == '2':
+                self.listar_usuarios()
+
+            elif opcion == '3':
+                username = input("Usuario: ").strip()
+                nuevo_password = getpass.getpass("Nueva contraseña: ")
+                confirmacion = getpass.getpass("Confirmar contraseña: ")
+                if nuevo_password != confirmacion:
+                    print("❌ Las contraseñas no coinciden")
+                    continue
+                if self.actualizar_password(username, nuevo_password):
+                    self.guardar_datos()
+
+            elif opcion == '4':
+                username = input("Usuario: ").strip()
+                if username not in self.datos['usuarios']:
+                    print("❌ Usuario no encontrado")
+                    continue
+                if self.datos['usuarios'][username].get('rol') == 'admin':
+                    print("⚠️  El usuario es admin y no necesita clientes asociados")
+                    continue
+                if not self.datos['clientes']:
+                    print("❌ No hay clientes cargados")
+                    continue
+                print("Clientes disponibles:", ', '.join(self.datos['clientes'].keys()))
+                clientes_input = input("Clientes asociados (separados por coma): ").strip()
+                clientes = [c.strip() for c in clientes_input.split(',') if c.strip()]
+                if self.actualizar_clientes_usuario(username, clientes):
+                    self.guardar_datos()
+
+            elif opcion == '5':
+                break
+            else:
+                print("❌ Opción inválida")
     
     def actualizar_composicion(self, composicion_input: str):
         """Actualiza la composición del fondo
@@ -261,8 +438,9 @@ class FondoAdminConsole:
             print("4. ⬆️  Registrar suscripción")
             print("5. ⬇️  Registrar rescate")
             print("6. 📈 Actualizar composición")
-            print("7. 💾 Guardar datos")
-            print("8. 🚪 Salir")
+            print("7. 👤 Administrar usuarios")
+            print("8. 💾 Guardar datos")
+            print("9. 🚪 Salir")
             print("="*40)
             
             try:
@@ -307,14 +485,17 @@ class FondoAdminConsole:
                     composicion = input("Composición: ").strip()
                     if composicion:
                         self.actualizar_composicion(composicion)
-                
+
                 elif opcion == '7':
-                    self.guardar_datos()
-                
+                    self.menu_usuarios()
+
                 elif opcion == '8':
+                    self.guardar_datos()
+
+                elif opcion == '9':
                     print("👋 ¡Hasta luego!")
                     break
-                
+
                 else:
                     print("❌ Opción inválida")
             
@@ -341,10 +522,22 @@ def main():
                        help='Registrar suscripción: --suscripcion "Juan Perez" 5000')
     parser.add_argument('--rescate', nargs=2, metavar=('CLIENTE', 'MONTO'),
                        help='Registrar rescate: --rescate "Juan Perez" 2000')
-    parser.add_argument('--composicion', 
+    parser.add_argument('--composicion',
                        help='Actualizar composición: --composicion "Bonos:10000,Acciones:15000"')
     parser.add_argument('--estado', action='store_true',
                        help='Mostrar estado actual del fondo')
+    parser.add_argument('--crear-usuario', metavar='USUARIO',
+                        help='Crear usuario de acceso web')
+    parser.add_argument('--rol', choices=['admin', 'cliente'], default='cliente',
+                        help='Rol del usuario creado (default: cliente)')
+    parser.add_argument('--clientes-usuario',
+                        help='Clientes asociados al usuario (separados por comas)')
+    parser.add_argument('--password',
+                        help='Contraseña para crear o actualizar usuarios (si no se proporciona se solicitará)')
+    parser.add_argument('--reset-password', metavar='USUARIO',
+                        help='Restablecer la contraseña de un usuario existente')
+    parser.add_argument('--listar-usuarios', action='store_true',
+                        help='Mostrar usuarios registrados')
     
     args = parser.parse_args()
     
@@ -375,16 +568,58 @@ def main():
     if args.composicion:
         admin.actualizar_composicion(args.composicion)
         cambios_realizados = True
-    
+
+    if args.crear_usuario:
+        password = args.password
+        if not password:
+            password = getpass.getpass("Contraseña para el nuevo usuario: ")
+        if not password:
+            print("❌ Debe proporcionar una contraseña")
+        else:
+            clientes_usuario = []
+            if args.rol != 'admin':
+                if args.clientes_usuario:
+                    clientes_usuario = [c.strip() for c in args.clientes_usuario.split(',') if c.strip()]
+                if not clientes_usuario:
+                    print("❌ Debe indicar clientes asociados con --clientes-usuario")
+                else:
+                    if admin.crear_usuario(args.crear_usuario, password, args.rol, clientes_usuario):
+                        cambios_realizados = True
+            else:
+                if admin.crear_usuario(args.crear_usuario, password, args.rol, []):
+                    cambios_realizados = True
+
+    if args.reset_password:
+        nuevo_password = args.password
+        if not nuevo_password:
+            nuevo_password = getpass.getpass("Nueva contraseña: ")
+        if not nuevo_password:
+            print("❌ Debe proporcionar una contraseña para actualizar")
+        else:
+            if admin.actualizar_password(args.reset_password, nuevo_password):
+                cambios_realizados = True
+
+    if args.listar_usuarios:
+        admin.listar_usuarios()
+
     if cambios_realizados:
         admin.guardar_datos()
-    
+
     if args.estado or not any(vars(args).values()):
         admin.mostrar_estado()
     
     # Si no se pasaron argumentos específicos, abrir menú interactivo
-    if not any([args.balance is not None, args.cliente, args.suscripcion, 
-               args.rescate, args.composicion, args.estado]):
+    if not any([
+        args.balance is not None,
+        args.cliente,
+        args.suscripcion,
+        args.rescate,
+        args.composicion,
+        args.estado,
+        args.crear_usuario,
+        args.reset_password,
+        args.listar_usuarios,
+    ]):
         admin.menu_interactivo()
 
 if __name__ == "__main__":
