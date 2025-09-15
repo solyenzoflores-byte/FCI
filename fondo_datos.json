@@ -1,0 +1,89 @@
+{
+  "clientes": {
+    "Enzo": {
+      "cuotapartes": 35145.41994,
+      "fecha_ingreso": "2025-09-11T18:57:11.403516"
+    },
+    "Roberto": {
+      "cuotapartes": 590.6004029080415,
+      "fecha_ingreso": "2025-09-11T18:57:20.937532"
+    }
+  },
+  "transacciones": [
+    {
+      "fecha": "2025-09-11T18:57:11.403516",
+      "cliente": "Enzo",
+      "tipo": "suscripcion",
+      "monto": 35146994.94,
+      "cuotapartes": 35146.99494,
+      "valor_cuotaparte": 1000.0
+    },
+    {
+      "fecha": "2025-09-11T18:57:20.937532",
+      "cliente": "Roberto",
+      "tipo": "suscripcion",
+      "monto": 100000.0,
+      "cuotapartes": 100.0,
+      "valor_cuotaparte": 1000.0
+    },
+    {
+      "fecha": "2025-09-11T19:13:33.636951",
+      "cliente": "Enzo",
+      "tipo": "rescate",
+      "monto": -1575.0,
+      "cuotapartes": -1.575,
+      "valor_cuotaparte": 1000.0
+    },
+    {
+      "fecha": "2025-09-11T19:13:41.507245",
+      "cliente": "Roberto",
+      "tipo": "suscripcion",
+      "monto": 1575.0,
+      "cuotapartes": 1.575,
+      "valor_cuotaparte": 1000.0
+    },
+    {
+      "fecha": "2025-09-15T13:46:46.166717",
+      "cliente": "Roberto",
+      "tipo": "suscripcion",
+      "monto": 500000.0,
+      "cuotapartes": 489.0254029080415,
+      "valor_cuotaparte": 1022.4417730177142
+    }
+  ],
+  "balance_diario": [
+    {
+      "fecha": "2025-09-11",
+      "balance": 35246994.94
+    },
+    {
+      "fecha": "2025-09-12",
+      "balance": 35609991.22
+    },
+    {
+      "fecha": "2025-09-15",
+      "balance": 36038000.0
+    }
+  ],
+  "valor_cuotaparte": 1022.4417730177142,
+  "total_cuotapartes": 35736.020342908036,
+  "composicion_fondo": {
+    "Dólar": {
+      "monto": 16987.0,
+      "porcentaje": 0.06538444084332419
+    },
+    "JD": {
+      "monto": 994400.0,
+      "porcentaje": 3.827532111296966
+    },
+    "Pesos": {
+      "monto": 24944800.0,
+      "porcentaje": 96.01470535989598
+    },
+    "Opciones Galicia": {
+      "monto": 24000.0,
+      "porcentaje": 0.09237808796372404
+    }
+  },
+  "distribucion_activos": {}
+}
