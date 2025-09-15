@@ -1,593 +1,548 @@
-import streamlit as st
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime, date, timedelta
+from __future__ import annotations
+
 import json
 import os
-from typing import Dict, List
-import numpy as np
+from typing import Dict, List, Optional, Tuple
+
+import pandas as pd
+import plotly.express as px
+import streamlit as st
 from PIL import Image
-import base64
-import hashlib
+
+from security import verify_password
 
 # Configuración de la página
 st.set_page_config(
     page_title="Dashboard Fondo Común de Inversión",
     page_icon="💰",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# CONFIGURACIÓN DE SEGURIDAD
-# Opción 1: Usuario y contraseña (cambiar estos valores)
-ADMIN_USER = "Enzo"  # Cambiar por tu usuario
-ADMIN_PASSWORD = "Enzo123"  # Cambiar por tu contraseña
 
-# Opción 2: Solo contraseña maestra
-MASTER_PASSWORD = "Godeto"  # Cambiar por tu contraseña maestra
+class FondoInversion:
+    """Modelo de datos del fondo"""
 
-# Función de autenticación
-def verificar_autenticacion():
-    """Verifica si el usuario está autenticado"""
-    if 'authenticated' not in st.session_state:
-        st.session_state.authenticated = False
-    
-    if not st.session_state.authenticated:
-        st.markdown("""
-        <div style="background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); padding: 2rem; border-radius: 10px; color: white; text-align: center; margin-bottom: 2rem;">
-            <h1>🔒 Acceso Restringido</h1>
-            <p>Esta es una vista de solo lectura. Ingresa la contraseña para administrar.</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Formulario de login
-        with st.form("login_form"):
-            st.subheader("🔑 Autenticación de Administrador")
-            
-            # Opción 1: Usuario y contraseña
-            usuario = st.text_input("Usuario:", placeholder="Ingresa tu usuario")
-            password = st.text_input("Contraseña:", type="password", placeholder="Ingresa tu contraseña")
-            
-            # Opción 2: Solo contraseña maestra (comentar la línea anterior y descomentar esta)
-            # password = st.text_input("Contraseña Maestra:", type="password", placeholder="Ingresa la contraseña maestra")
-            
-            submitted = st.form_submit_button("🚀 Ingresar")
-            
-            if submitted:
-                # Verificación con usuario y contraseña
-                if usuario == ADMIN_USER and password == ADMIN_PASSWORD:
-                    st.session_state.authenticated = True
-                    st.success("✅ Acceso autorizado")
-                    st.rerun()
-                
-                # Verificación solo con contraseña maestra (comentar el bloque anterior y descomentar este)
-                # if password == MASTER_PASSWORD:
-                #     st.session_state.authenticated = True
-                #     st.success("✅ Acceso autorizado")
-                #     st.rerun()
-                else:
-                    st.error("❌ Credenciales incorrectas")
-        
-        return False
-    return True
+    def __init__(self, archivo_datos: str = "fondo_datos.json") -> None:
+        self.archivo_datos = archivo_datos
+        self.datos = self.cargar_datos()
 
-# Función para mostrar el botón de cerrar sesión
-def mostrar_logout():
-    """Muestra el botón para cerrar sesión"""
-    if st.session_state.get('authenticated', False):
-        with st.sidebar:
-            st.markdown("---")
-            if st.button("🚪 Cerrar Sesión", type="secondary"):
-                st.session_state.authenticated = False
-                st.rerun()
+    def cargar_datos(self) -> Dict:
+        """Carga los datos desde disco asegurando la estructura básica."""
+        if os.path.exists(self.archivo_datos):
+            try:
+                with open(self.archivo_datos, "r", encoding="utf-8") as f:
+                    datos = json.load(f)
+            except Exception:
+                datos = self.estructura_inicial()
+        else:
+            datos = self.estructura_inicial()
 
-# Función para cargar logo
-def cargar_logo():
-    """Carga el logo si existe"""
-    logo_path = "Andes.png"  # Coloca tu logo con este nombre
+        estructura = self.estructura_inicial()
+        for clave, valor_default in estructura.items():
+            if clave not in datos:
+                datos[clave] = valor_default
+        return datos
+
+    def estructura_inicial(self) -> Dict:
+        return {
+            "clientes": {},
+            "transacciones": [],
+            "balance_diario": [],
+            "valor_cuotaparte": 1000.0,
+            "total_cuotapartes": 0,
+            "composicion_fondo": {},
+            "distribucion_activos": {},
+            "usuarios": {},
+        }
+
+    def guardar_datos(self) -> None:
+        with open(self.archivo_datos, "w", encoding="utf-8") as f:
+            json.dump(self.datos, f, indent=2, ensure_ascii=False)
+
+    # ------------------------------------------------------------------
+    # Métodos de consulta de datos
+    # ------------------------------------------------------------------
+
+    def get_usuario(self, username: str) -> Optional[Dict]:
+        return self.datos.get("usuarios", {}).get(username)
+
+    def get_clientes_filtrados(
+        self, clientes_permitidos: Optional[List[str]]
+    ) -> Dict[str, Dict]:
+        clientes = self.datos.get("clientes", {})
+        if clientes_permitidos is None:
+            return dict(clientes)
+        return {
+            nombre: info
+            for nombre, info in clientes.items()
+            if nombre in clientes_permitidos
+        }
+
+    def get_transacciones_filtradas(
+        self, clientes_permitidos: Optional[List[str]]
+    ) -> List[Dict]:
+        transacciones = self.datos.get("transacciones", [])
+        if clientes_permitidos is None:
+            return list(transacciones)
+        return [
+            t for t in transacciones if t.get("cliente") in clientes_permitidos
+        ]
+
+    def get_patrimonio_clientes(
+        self, clientes_permitidos: Optional[List[str]]
+    ) -> Dict[str, Dict]:
+        clientes = self.get_clientes_filtrados(clientes_permitidos)
+        if clientes_permitidos is None:
+            total_para_porcentaje = self.datos.get("total_cuotapartes", 0)
+        else:
+            total_para_porcentaje = sum(
+                datos.get("cuotapartes", 0) for datos in clientes.values()
+            )
+
+        patrimonio: Dict[str, Dict] = {}
+        valor_cuotaparte = self.datos.get("valor_cuotaparte", 0)
+        for nombre, datos in clientes.items():
+            cuotapartes = datos.get("cuotapartes", 0)
+            valor_actual = cuotapartes * valor_cuotaparte
+            porcentaje = (
+                (cuotapartes / total_para_porcentaje * 100)
+                if total_para_porcentaje
+                else 0
+            )
+            patrimonio[nombre] = {
+                "cuotapartes": cuotapartes,
+                "valor_actual": valor_actual,
+                "porcentaje": porcentaje,
+            }
+        return patrimonio
+
+    def get_total_cuotapartes_filtradas(
+        self, clientes_permitidos: Optional[List[str]]
+    ) -> float:
+        if clientes_permitidos is None:
+            return self.datos.get("total_cuotapartes", 0.0)
+        clientes = self.get_clientes_filtrados(clientes_permitidos)
+        return sum(datos.get("cuotapartes", 0.0) for datos in clientes.values())
+
+    def get_balance_diario_df(self) -> pd.DataFrame:
+        df = pd.DataFrame(self.datos.get("balance_diario", []))
+        if df.empty:
+            return df
+        df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
+        df = df.dropna(subset=["fecha"]).sort_values("fecha")
+        return df
+
+    def calcular_rendimiento_mensualizado(self) -> Tuple[float, float]:
+        if len(self.datos.get("balance_diario", [])) < 2:
+            return 0.0, 0.0
+
+        df_balance = self.get_balance_diario_df()
+        if df_balance.empty:
+            return 0.0, 0.0
+
+        balance_inicial = df_balance["balance"].iloc[0]
+        balance_actual = df_balance["balance"].iloc[-1]
+        if balance_inicial == 0:
+            return 0.0, 0.0
+
+        fecha_inicial = df_balance["fecha"].iloc[0]
+        fecha_actual = df_balance["fecha"].iloc[-1]
+        dias = (fecha_actual - fecha_inicial).days
+        if dias <= 0:
+            return 0.0, 0.0
+
+        rendimiento_total = ((balance_actual - balance_inicial) / balance_inicial) * 100
+        if dias >= 30:
+            rendimiento_mensual = (
+                (pow(balance_actual / balance_inicial, 30 / dias) - 1) * 100
+            )
+        else:
+            rendimiento_mensual = (rendimiento_total / dias) * 30
+
+        return rendimiento_total, rendimiento_mensual
+
+    def get_balance_total_filtrado(
+        self, clientes_permitidos: Optional[List[str]]
+    ) -> float:
+        patrimonio = self.get_patrimonio_clientes(clientes_permitidos)
+        return sum(info["valor_actual"] for info in patrimonio.values())
+
+
+# ----------------------------------------------------------------------
+# Utilidades de interfaz
+# ----------------------------------------------------------------------
+
+
+def cargar_logo() -> Optional[Image.Image]:
+    logo_path = "Andes.png"
     if os.path.exists(logo_path):
         try:
-            logo = Image.open(logo_path)
-            return logo
-        except:
+            return Image.open(logo_path)
+        except Exception:
             return None
     return None
 
-# Estilos CSS personalizados
-st.markdown("""
-<style>
-    .main-header {
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        padding: 2rem;
-        border-radius: 10px;
-        color: white;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .metric-card {
-        background: white;
-        padding: 1.5rem;
-        border-radius: 10px;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        border-left: 4px solid #667eea;
-    }
-    .rendimiento-positivo {
-        color: #28a745;
-        font-weight: bold;
-        font-size: 1.2em;
-    }
-    .rendimiento-negativo {
-        color: #dc3545;
-        font-weight: bold;
-        font-size: 1.2em;
-    }
-    .logo-container {
-        display: flex;
-        justify-content: center;
-        margin-bottom: 1rem;
-    }
-    .stAlert {
-        border-radius: 10px;
-    }
-    .readonly-mode {
-        background-color: #f8f9fa;
-        border: 1px solid #dee2e6;
-        border-radius: 5px;
-        padding: 10px;
-        margin: 10px 0;
-    }
-</style>
-""", unsafe_allow_html=True)
 
-class FondoInversion:
-    def __init__(self):
-        self.archivo_datos = 'fondo_datos.json'
-        self.datos = self.cargar_datos()
-    
-    def cargar_datos(self):
-        """Carga los datos desde el archivo JSON o crea estructura inicial"""
-        if os.path.exists(self.archivo_datos):
-            try:
-                with open(self.archivo_datos, 'r', encoding='utf-8') as f:
-                    datos = json.load(f)
-                
-                # Asegurar que existen todas las claves necesarias (migración de datos)
-                estructura_completa = self.estructura_inicial()
-                for clave, valor_default in estructura_completa.items():
-                    if clave not in datos:
-                        datos[clave] = valor_default
-                
-                return datos
-            except:
-                return self.estructura_inicial()
-        else:
-            return self.estructura_inicial()
-    
-    def estructura_inicial(self):
-        """Estructura inicial de datos"""
-        return {
-            'clientes': {},
-            'transacciones': [],
-            'balance_diario': [],
-            'valor_cuotaparte': 1000.0,  # Valor inicial en pesos
-            'total_cuotapartes': 0,
-            'composicion_fondo': {},  # Cambio: ahora guarda montos y porcentajes
-            'distribucion_activos': {}  # Nuevo: distribución de activos
+def aplicar_estilos() -> None:
+    st.markdown(
+        """
+        <style>
+        .main-header {
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            padding: 2rem;
+            border-radius: 12px;
+            color: white;
+            text-align: center;
+            margin-bottom: 2rem;
         }
-    
-    def guardar_datos(self):
-        """Guarda los datos en el archivo JSON"""
-        with open(self.archivo_datos, 'w', encoding='utf-8') as f:
-            json.dump(self.datos, f, indent=2, ensure_ascii=False)
-    
-    def agregar_cliente(self, nombre: str, saldo_inicial: float = 0):
-        """Agrega un nuevo cliente al fondo"""
-        if nombre not in self.datos['clientes']:
-            cuotapartes = 0
-            if saldo_inicial > 0 and self.datos['valor_cuotaparte'] > 0:
-                cuotapartes = saldo_inicial / self.datos['valor_cuotaparte']
-                self.datos['total_cuotapartes'] += cuotapartes
-                
-                # Registrar transacción inicial
-                transaccion = {
-                    'fecha': datetime.now().isoformat(),
-                    'cliente': nombre,
-                    'tipo': 'suscripcion',
-                    'monto': saldo_inicial,
-                    'cuotapartes': cuotapartes,
-                    'valor_cuotaparte': self.datos['valor_cuotaparte']
-                }
-                self.datos['transacciones'].append(transaccion)
-            
-            self.datos['clientes'][nombre] = {
-                'cuotapartes': cuotapartes,
-                'fecha_ingreso': datetime.now().isoformat()
-            }
-            return True
-        return False
-    
-    def suscripcion(self, cliente: str, monto: float):
-        """Registra una suscripción (aporte) de un cliente"""
-        if cliente in self.datos['clientes'] and monto > 0:
-            cuotapartes_nuevas = monto / self.datos['valor_cuotaparte']
-            self.datos['clientes'][cliente]['cuotapartes'] += cuotapartes_nuevas
-            self.datos['total_cuotapartes'] += cuotapartes_nuevas
-            
-            transaccion = {
-                'fecha': datetime.now().isoformat(),
-                'cliente': cliente,
-                'tipo': 'suscripcion',
-                'monto': monto,
-                'cuotapartes': cuotapartes_nuevas,
-                'valor_cuotaparte': self.datos['valor_cuotaparte']
-            }
-            self.datos['transacciones'].append(transaccion)
-            return True
-        return False
-    
-    def rescate(self, cliente: str, monto: float):
-        """Registra un rescate (retiro) de un cliente"""
-        if cliente in self.datos['clientes']:
-            cuotapartes_a_retirar = monto / self.datos['valor_cuotaparte']
-            
-            if self.datos['clientes'][cliente]['cuotapartes'] >= cuotapartes_a_retirar:
-                self.datos['clientes'][cliente]['cuotapartes'] -= cuotapartes_a_retirar
-                self.datos['total_cuotapartes'] -= cuotapartes_a_retirar
-                
-                transaccion = {
-                    'fecha': datetime.now().isoformat(),
-                    'cliente': cliente,
-                    'tipo': 'rescate',
-                    'monto': -monto,
-                    'cuotapartes': -cuotapartes_a_retirar,
-                    'valor_cuotaparte': self.datos['valor_cuotaparte']
-                }
-                self.datos['transacciones'].append(transaccion)
-                return True
-        return False
-    
-    def actualizar_balance_diario(self, nuevo_balance: float):
-        """Actualiza el balance total del fondo y recalcula valor de cuotaparte"""
-        fecha_hoy = date.today().isoformat()
-        
-        # Remover entrada del mismo día si existe
-        self.datos['balance_diario'] = [
-            b for b in self.datos['balance_diario'] 
-            if b['fecha'] != fecha_hoy
-        ]
-        
-        # Agregar nuevo balance
-        balance_entry = {
-            'fecha': fecha_hoy,
-            'balance': nuevo_balance
+        .metric-card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
         }
-        self.datos['balance_diario'].append(balance_entry)
-        
-        # Recalcular valor de cuotaparte
-        if self.datos['total_cuotapartes'] > 0:
-            self.datos['valor_cuotaparte'] = nuevo_balance / self.datos['total_cuotapartes']
-        
-        # Mantener solo los últimos 365 días
-        self.datos['balance_diario'] = self.datos['balance_diario'][-365:]
-    
-    def actualizar_composicion_fondo(self, composicion_montos: dict):
-        """Actualiza la composición del fondo con montos y calcula porcentajes"""
-        total_monto = sum(composicion_montos.values())
-        
-        composicion_completa = {}
-        for instrumento, monto in composicion_montos.items():
-            porcentaje = (monto / total_monto * 100) if total_monto > 0 else 0
-            composicion_completa[instrumento] = {
-                'monto': monto,
-                'porcentaje': porcentaje
-            }
-        
-        self.datos['composicion_fondo'] = composicion_completa
-    
-    def get_composicion_para_graficos(self):
-        """Retorna la composición en formato para gráficos (solo porcentajes)"""
-        if not self.datos['composicion_fondo']:
-            return {}
-        
-        return {instrumento: datos['porcentaje'] 
-                for instrumento, datos in self.datos['composicion_fondo'].items()}
-    
-    def get_total_monto_composicion(self):
-        """Calcula el monto total de la composición"""
-        if not self.datos['composicion_fondo']:
-            return 0
-        
-        return sum(datos['monto'] for datos in self.datos['composicion_fondo'].values())
-    
-    def actualizar_distribucion_activos(self, distribucion: dict):
-        """Actualiza la distribución de activos"""
-        self.datos['distribucion_activos'] = distribucion
-    
-    def calcular_rendimiento_mensualizado(self):
-        """Calcula el rendimiento mensualizado del fondo"""
-        if len(self.datos['balance_diario']) < 2:
-            return 0, 0
-        
-        df_balance = pd.DataFrame(self.datos['balance_diario'])
-        df_balance['fecha'] = pd.to_datetime(df_balance['fecha'])
-        df_balance = df_balance.sort_values('fecha')
-        
-        # Rendimiento del período completo
-        balance_inicial = df_balance['balance'].iloc[0]
-        balance_actual = df_balance['balance'].iloc[-1]
-        
-        if balance_inicial == 0:
-            return 0, 0
-        
-        # Calcular días transcurridos
-        fecha_inicial = df_balance['fecha'].iloc[0]
-        fecha_actual = df_balance['fecha'].iloc[-1]
-        dias_transcurridos = (fecha_actual - fecha_inicial).days
-        
-        if dias_transcurridos == 0:
-            return 0, 0
-        
-        # Rendimiento total
-        rendimiento_total = ((balance_actual - balance_inicial) / balance_inicial) * 100
-        
-        # Rendimiento mensualizado (30 días)
-        if dias_transcurridos >= 30:
-            rendimiento_mensual = (pow(balance_actual / balance_inicial, 30 / dias_transcurridos) - 1) * 100
-        else:
-            # Si no hay 30 días, extrapolamos
-            rendimiento_mensual = (rendimiento_total / dias_transcurridos) * 30
-        
-        return rendimiento_total, rendimiento_mensual
-    
-    def get_patrimonio_clientes(self):
-        """Obtiene el patrimonio actual de cada cliente"""
-        patrimonio = {}
-        for cliente, datos in self.datos['clientes'].items():
-            valor_actual = datos['cuotapartes'] * self.datos['valor_cuotaparte']
-            patrimonio[cliente] = {
-                'cuotapartes': datos['cuotapartes'],
-                'valor_actual': valor_actual,
-                'porcentaje': (datos['cuotapartes'] / self.datos['total_cuotapartes'] * 100) if self.datos['total_cuotapartes'] > 0 else 0
-            }
-        return patrimonio
-    
-    def get_balance_total(self):
-        """Obtiene el balance total actual"""
-        if self.datos['balance_diario']:
-            return self.datos['balance_diario'][-1]['balance']
-        return 0
+        .stAlert {
+            border-radius: 10px;
+        }
+        .readonly-note {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 16px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-# Inicializar el fondo
-if 'fondo' not in st.session_state:
+
+def verificar_autenticacion(fondo: FondoInversion) -> bool:
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+        st.session_state.usuario = None
+        st.session_state.rol = None
+        st.session_state.clientes_permitidos = None
+
+    if st.session_state.authenticated:
+        return True
+
+    st.markdown(
+        """
+        <div style="background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);\n                    padding: 2rem; border-radius: 12px; color: white; text-align: center;\n                    margin-bottom: 2rem;">
+            <h1>🔒 Acceso restringido</h1>
+            <p>Ingresa tus credenciales para consultar el fondo.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    usuarios_configurados = fondo.datos.get("usuarios", {})
+    if not usuarios_configurados:
+        st.warning(
+            "No hay usuarios configurados. Usa `admin_console.py` para crear credenciales."
+        )
+        st.stop()
+
+    with st.form("login_form"):
+        st.subheader("Ingreso al panel")
+        usuario = st.text_input("Usuario")
+        password = st.text_input("Contraseña", type="password")
+        submitted = st.form_submit_button("Ingresar")
+
+        if submitted:
+            datos_usuario = fondo.get_usuario(usuario)
+            if datos_usuario and verify_password(
+                password, datos_usuario.get("salt", ""), datos_usuario.get("password_hash", "")
+            ):
+                st.session_state.authenticated = True
+                st.session_state.usuario = usuario
+                rol = datos_usuario.get("rol", "cliente")
+                st.session_state.rol = rol
+                if rol == "admin":
+                    st.session_state.clientes_permitidos = None
+                else:
+                    st.session_state.clientes_permitidos = datos_usuario.get("clientes", [])
+                st.success("✅ Acceso autorizado")
+                st.rerun()
+            else:
+                st.error("❌ Usuario o contraseña incorrectos")
+
+    st.stop()
+
+
+def mostrar_logout(fondo: FondoInversion) -> None:
+    with st.sidebar:
+        st.markdown("### 👤 Sesión")
+        st.write(f"**Usuario:** {st.session_state.usuario}")
+        rol = st.session_state.get("rol", "cliente")
+        rol_label = "Administrador" if rol == "admin" else "Inversor"
+        st.write(f"**Rol:** {rol_label}")
+        st.info(
+            "Esta es una vista de solo lectura. Todas las modificaciones deben realizarse desde `admin_console.py`."
+        )
+        if st.button("🚪 Cerrar sesión", use_container_width=True):
+            for key in ["authenticated", "usuario", "rol", "clientes_permitidos"]:
+                st.session_state.pop(key, None)
+            st.rerun()
+
+
+# ----------------------------------------------------------------------
+# Inicio de la aplicación
+# ----------------------------------------------------------------------
+
+aplicar_estilos()
+
+if "fondo" not in st.session_state:
     st.session_state.fondo = FondoInversion()
 
-fondo = st.session_state.fondo
+fondo: FondoInversion = st.session_state.fondo
 
-# VERIFICAR AUTENTICACIÓN
-is_admin = verificar_autenticacion()
+if not verificar_autenticacion(fondo):
+    st.stop()
 
-# Si no está autenticado, mostrar solo vista de lectura
-if not is_admin:
-    # Vista de solo lectura - solo mostrar datos
-    logo = cargar_logo()
-    
-    st.markdown("""
-    <div class="main-header">
-    """, unsafe_allow_html=True)
-    
-    if logo:
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            st.image(logo, width=150)
-    
-    st.markdown("""
-        <h1>💰 Dashboard Fondo Común de Inversión</h1>
-        <p>📊 Vista de Solo Lectura</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Métricas principales (solo lectura)
-    balance_total = fondo.get_balance_total()
-    patrimonio_clientes = fondo.get_patrimonio_clientes()
-    total_clientes = len(fondo.datos['clientes'])
-    rendimiento_total, rendimiento_mensual = fondo.calcular_rendimiento_mensualizado()
-    
-    col1, col2, col3, col4, col5 = st.columns(5)
-    
-    with col1:
-        st.metric(
-            label="Balance Total",
-            value=f"${balance_total:,.2f}",
-            delta=None
-        )
-    
-    with col2:
-        st.metric(
-            label="Total Clientes",
-            value=str(total_clientes),
-            delta=None
-        )
-    
-    with col3:
-        st.metric(
-            label="Total Cuotapartes",
-            value=f"{fondo.datos['total_cuotapartes']:,.2f}",
-            delta=None
-        )
-    
-    with col4:
-        st.metric(
-            label="Valor Cuotaparte",
-            value=f"${fondo.datos['valor_cuotaparte']:,.2f}",
-            delta=None
-        )
-    
-    with col5:
-        # Rendimiento mensualizado con color condicional
-        color_class = "rendimiento-positivo" if rendimiento_mensual >= 0 else "rendimiento-negativo"
-        st.markdown(f"""
-        <div style="text-align: center; padding: 10px; background: white; border-radius: 10px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
-            <div style="font-size: 0.8em; color: #666; margin-bottom: 5px;">Rendimiento Mensual</div>
-            <div class="{color_class}">{rendimiento_mensual:+.2f}%</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Tabs de solo lectura
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Resumen", "👥 Clientes", "📊 Gráficos", "🔄 Historial", "📋 Composición"])
-    
-    # [El resto del código de las tabs se mantiene igual, pero sin controles de edición]
-    # ... (código de las tabs de visualización)
-    
-    st.stop()  # Detener ejecución aquí si no está autenticado
+mostrar_logout(fondo)
 
-# A partir de aquí, solo se ejecuta si está autenticado
-mostrar_logout()
-
-# Header principal con logo
 logo = cargar_logo()
 
-st.markdown("""
-<div class="main-header">
-""", unsafe_allow_html=True)
+st.markdown("<div class='main-header'>", unsafe_allow_html=True)
+if logo is not None:
+    col_logo, col_text = st.columns([1, 3])
+    with col_logo:
+        st.image(logo, width=140)
+    with col_text:
+        st.markdown("<h1>Dashboard Fondo Común de Inversión</h1>", unsafe_allow_html=True)
+        st.markdown(
+            "<p>Panel de consulta - Datos en modo lectura</p>",
+            unsafe_allow_html=True,
+        )
+else:
+    st.markdown("<h1>Dashboard Fondo Común de Inversión</h1>", unsafe_allow_html=True)
+    st.markdown(
+        "<p>Panel de consulta - Datos en modo lectura</p>",
+        unsafe_allow_html=True,
+    )
+st.markdown("</div>", unsafe_allow_html=True)
 
-if logo:
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.image(logo, width=150)
+clientes_permitidos = st.session_state.get("clientes_permitidos")
+patrimonio_clientes = fondo.get_patrimonio_clientes(clientes_permitidos)
+transacciones_filtradas = fondo.get_transacciones_filtradas(clientes_permitidos)
 
-st.markdown("""
-    <h1>💰 Dashboard Fondo Común de Inversión</h1>
-    <p>🔓 Modo Administrador - Control Total</p>
-</div>
-""", unsafe_allow_html=True)
+balance_total = fondo.get_balance_total_filtrado(clientes_permitidos)
+valor_cuotaparte = fondo.datos.get("valor_cuotaparte", 0.0)
 
-# Métricas principales
-balance_total = fondo.get_balance_total()
-patrimonio_clientes = fondo.get_patrimonio_clientes()
-total_clientes = len(fondo.datos['clientes'])
+clientes_filtrados = fondo.get_clientes_filtrados(clientes_permitidos)
+numero_clientes = len(clientes_filtrados)
+
+cuotapartes_totales = fondo.get_total_cuotapartes_filtradas(clientes_permitidos)
 rendimiento_total, rendimiento_mensual = fondo.calcular_rendimiento_mensualizado()
 
 col1, col2, col3, col4, col5 = st.columns(5)
-
 with col1:
-    st.metric(
-        label="Balance Total",
-        value=f"${balance_total:,.2f}",
-        delta=None
-    )
-
+    st.metric("Valor actual", f"${balance_total:,.2f}")
 with col2:
-    st.metric(
-        label="Total Clientes",
-        value=str(total_clientes),
-        delta=None
-    )
-
+    st.metric("Clientes visibles", str(numero_clientes))
 with col3:
-    st.metric(
-        label="Total Cuotapartes",
-        value=f"{fondo.datos['total_cuotapartes']:,.2f}",
-        delta=None
-    )
-
+    st.metric("Cuotapartes", f"{cuotapartes_totales:,.4f}")
 with col4:
-    st.metric(
-        label="Valor Cuotaparte",
-        value=f"${fondo.datos['valor_cuotaparte']:,.2f}",
-        delta=None
+    st.metric("Valor de cuotaparte", f"${valor_cuotaparte:,.2f}")
+with col5:
+    color = "#28a745" if rendimiento_mensual >= 0 else "#dc3545"
+    st.markdown(
+        f"""
+        <div class="metric-card" style="text-align: center;">
+            <div style="font-size: 0.8em; color: #666;">Rendimiento mensualizado del fondo</div>
+            <div style="font-size: 1.4em; font-weight: 700; color: {color};">
+                {rendimiento_mensual:+.2f}%
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-with col5:
-    # Rendimiento mensualizado con color condicional
-    color_class = "rendimiento-positivo" if rendimiento_mensual >= 0 else "rendimiento-negativo"
-    st.markdown(f"""
-    <div style="text-align: center; padding: 10px; background: white; border-radius: 10px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
-        <div style="font-size: 0.8em; color: #666; margin-bottom: 5px;">Rendimiento Mensual</div>
-        <div class="{color_class}">{rendimiento_mensual:+.2f}%</div>
-    </div>
-    """, unsafe_allow_html=True)
+if clientes_permitidos is not None and not clientes_filtrados:
+    st.warning(
+        "Tu usuario no tiene clientes asociados actualmente. Consulta al administrador si necesitas acceso."
+    )
 
-# Sidebar para operaciones (solo para administradores)
-st.sidebar.header("⚙️ Operaciones de Administrador")
-st.sidebar.success("✅ Modo Administrador Activado")
 
-# Actualizar balance diario
-st.sidebar.subheader("📊 Balance Diario")
-nuevo_balance = st.sidebar.number_input(
-    "Nuevo balance total:",
-    min_value=0.0,
-    value=float(balance_total) if balance_total > 0 else 0.0,
-    format="%.2f"
+tab_resumen, tab_clientes, tab_graficos, tab_historial, tab_composicion = st.tabs(
+    ["📈 Resumen", "👥 Clientes", "📊 Gráficos", "🔄 Historial", "📋 Composición"]
 )
 
-if st.sidebar.button("🔄 Actualizar Balance", type="primary"):
-    fondo.actualizar_balance_diario(nuevo_balance)
-    fondo.guardar_datos()
-    st.sidebar.success("Balance actualizado correctamente")
-    st.rerun()
+with tab_resumen:
+    st.subheader("Resumen general")
+    st.markdown(
+        "<div class='readonly-note'>Los datos se actualizan desde la consola de administración. Esta vista solo permite consulta.</div>",
+        unsafe_allow_html=True,
+    )
 
-st.sidebar.divider()
+    df_balance = fondo.get_balance_diario_df()
+    if not df_balance.empty:
+        fig_balance = px.line(
+            df_balance,
+            x="fecha",
+            y="balance",
+            title="Evolución del balance del fondo",
+            markers=True,
+        )
+        fig_balance.update_layout(margin=dict(l=10, r=10, t=50, b=10))
+        st.plotly_chart(fig_balance, use_container_width=True)
+    else:
+        st.info("No hay registros de balance diario disponibles.")
 
-# [Resto del código del sidebar para administradores...]
-# Composición del fondo - MODIFICADO PARA USAR MONTOS
-st.sidebar.subheader("📈 Composición del Fondo")
-with st.sidebar.expander("Actualizar Composición"):
-    st.write("Ingresa los instrumentos del fondo y sus montos:")
-    
-    # Número de instrumentos
-    num_instrumentos = st.number_input("Número de instrumentos:", min_value=1, max_value=20, value=5)
-    
-    composicion_nueva = {}
-    total_monto = 0
-    
-    for i in range(num_instrumentos):
-        col1, col2 = st.columns(2)
-        with col1:
-            instrumento = st.text_input(f"Instrumento {i+1}:", key=f"instr_{i}")
-        with col2:
-            monto = st.number_input(f"Monto {i+1}:", min_value=0.0, value=0.0, format="%.2f", key=f"monto_{i}")
-        
-        if instrumento and monto > 0:
-            composicion_nueva[instrumento] = monto
-            total_monto += monto
-    
-    # Mostrar total y porcentajes calculados
-    st.write(f"**Total:** ${total_monto:,.2f}")
-    
-    if composicion_nueva and total_monto > 0:
-        st.write("**Porcentajes calculados:**")
-        for instrumento, monto in composicion_nueva.items():
-            porcentaje = (monto / total_monto * 100)
-            st.write(f"• {instrumento}: ${monto:,.2f} ({porcentaje:.1f}%)")
-    
-    if st.button("💾 Guardar Composición"):
-        if composicion_nueva:
-            fondo.actualizar_composicion_fondo(composicion_nueva)
-            fondo.guardar_datos()
-            st.success("Composición actualizada")
-            st.rerun()
-        else:
-            st.error("Ingrese al menos un instrumento con monto")
+    if patrimonio_clientes:
+        st.subheader("Detalle por cliente")
+        for nombre, info in patrimonio_clientes.items():
+            st.markdown(f"#### {nombre}")
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                st.metric("Cuotapartes", f"{info['cuotapartes']:,.4f}")
+            with col_b:
+                st.metric("Valor actual", f"${info['valor_actual']:,.2f}")
+            with col_c:
+                st.metric("Participación", f"{info['porcentaje']:.2f}%")
+    else:
+        st.info("No hay clientes disponibles para este usuario.")
 
-# [Resto del código para las operaciones de administrador...]
+with tab_clientes:
+    st.subheader("Clientes habilitados")
+    if patrimonio_clientes:
+        df_clientes = pd.DataFrame(
+            [
+                {
+                    "Cliente": nombre,
+                    "Cuotapartes": datos["cuotapartes"],
+                    "Valor actual": datos["valor_actual"],
+                    "Participación (%)": datos["porcentaje"],
+                }
+                for nombre, datos in patrimonio_clientes.items()
+            ]
+        )
+        df_clientes = df_clientes.sort_values("Valor actual", ascending=False)
+        st.dataframe(
+            df_clientes.style.format(
+                {
+                    "Cuotapartes": "{:.4f}",
+                    "Valor actual": "${:,.2f}",
+                    "Participación (%)": "{:.2f}",
+                }
+            ),
+            use_container_width=True,
+        )
+    else:
+        st.info("No hay clientes asociados a tu usuario.")
 
-# Tabs completas con funcionalidad de administrador
-# [Aquí va todo el código de las tabs que ya tenías]
+with tab_graficos:
+    st.subheader("Visualizaciones")
 
-# Footer
+    df_clientes_plot = pd.DataFrame(
+        [
+            {"Cliente": nombre, "Valor actual": datos["valor_actual"]}
+            for nombre, datos in patrimonio_clientes.items()
+        ]
+    )
+
+    if not df_clientes_plot.empty:
+        fig_pie = px.pie(
+            df_clientes_plot,
+            names="Cliente",
+            values="Valor actual",
+            title="Distribución por cliente",
+        )
+        fig_pie.update_traces(textposition="inside", textinfo="percent+label")
+        st.plotly_chart(fig_pie, use_container_width=True)
+    else:
+        st.info("No hay datos suficientes para generar gráficos de clientes.")
+
+    df_transacciones = pd.DataFrame(transacciones_filtradas)
+    if not df_transacciones.empty:
+        df_transacciones["fecha"] = pd.to_datetime(df_transacciones["fecha"], errors="coerce")
+        df_transacciones = df_transacciones.dropna(subset=["fecha"]).sort_values("fecha")
+        fig_mov = px.bar(
+            df_transacciones,
+            x="fecha",
+            y="monto",
+            color="tipo",
+            title="Movimientos registrados",
+            labels={"monto": "Monto", "fecha": "Fecha", "tipo": "Tipo"},
+        )
+        fig_mov.update_layout(margin=dict(l=10, r=10, t=50, b=10))
+        st.plotly_chart(fig_mov, use_container_width=True)
+    else:
+        st.info("No se registran transacciones para este usuario.")
+
+with tab_historial:
+    st.subheader("Historial de movimientos")
+    df_historial = pd.DataFrame(transacciones_filtradas)
+    if not df_historial.empty:
+        df_historial["fecha"] = pd.to_datetime(df_historial["fecha"], errors="coerce")
+        df_historial = df_historial.dropna(subset=["fecha"]).sort_values("fecha", ascending=False)
+        df_historial["monto"] = df_historial["monto"].map(lambda x: f"${x:,.2f}")
+        df_historial["cuotapartes"] = df_historial["cuotapartes"].map(lambda x: f"{x:,.4f}")
+        df_historial["valor_cuotaparte"] = df_historial["valor_cuotaparte"].map(
+            lambda x: f"${x:,.2f}"
+        )
+        df_historial.rename(columns={"fecha": "Fecha"}, inplace=True)
+        st.dataframe(df_historial, use_container_width=True)
+    else:
+        st.info("No hay movimientos cargados para los clientes visibles.")
+
+with tab_composicion:
+    st.subheader("Composición del fondo")
+    composicion = fondo.datos.get("composicion_fondo", {})
+    if composicion:
+        df_composicion = pd.DataFrame(
+            [
+                {
+                    "Instrumento": instrumento,
+                    "Monto": datos.get("monto", 0.0),
+                    "Porcentaje": datos.get("porcentaje", 0.0),
+                }
+                for instrumento, datos in composicion.items()
+            ]
+        )
+        df_composicion = df_composicion.sort_values("Porcentaje", ascending=False)
+        st.dataframe(
+            df_composicion.style.format(
+                {"Monto": "${:,.2f}", "Porcentaje": "{:.2f}%"}
+            ),
+            use_container_width=True,
+        )
+        fig_comp = px.pie(
+            df_composicion,
+            names="Instrumento",
+            values="Monto",
+            title="Participación por instrumento",
+        )
+        fig_comp.update_layout(margin=dict(l=10, r=10, t=50, b=10))
+        st.plotly_chart(fig_comp, use_container_width=True)
+    else:
+        st.info("Todavía no se cargó la composición del fondo.")
+
+    distribucion = fondo.datos.get("distribucion_activos", {})
+    if distribucion:
+        st.subheader("Distribución de activos")
+        df_distribucion = pd.DataFrame(
+            [
+                {"Activo": activo, "Porcentaje": valor}
+                for activo, valor in distribucion.items()
+            ]
+        )
+        fig_dist = px.bar(
+            df_distribucion,
+            x="Activo",
+            y="Porcentaje",
+            title="Distribución por tipo de activo",
+            labels={"Porcentaje": "%"},
+        )
+        fig_dist.update_layout(margin=dict(l=10, r=10, t=50, b=10))
+        st.plotly_chart(fig_dist, use_container_width=True)
+    else:
+        st.caption("Carga la distribución de activos desde la consola para verla aquí.")
+
 st.markdown("---")
-st.markdown("**🔐 Modo Administrador Activo - Control Total Habilitado**")
-st.markdown("**💡 Instrucciones de uso:**")
-st.markdown("""
-1. **Balance Diario**: Actualiza el balance total del fondo desde el sidebar
-2. **Nuevos Clientes**: Agrega clientes con saldo inicial opcional
-3. **Suscripciones**: Registra aportes de los clientes
-4. **Rescates**: Registra retiros (verifica fondos suficientes)
-5. **Composición**: Define los instrumentos que componen el fondo **ingresando montos** (los porcentajes se calculan automáticamente)
-6. **Distribución**: Establece la distribución por tipo de activo
-7. **Logo**: Coloca tu logo como 'logo_empresa.png' en la carpeta del proyecto
-8. **Análisis**: Revisa gráficos, rendimientos y evolución en las diferentes pestañas
-""")
-
-st.info("💾 **Todos los datos se guardan automáticamente en 'fondo_datos.json'**")
+st.caption(
+    "📄 Panel en modo consulta. Para actualizar los datos utiliza el script `admin_console.py`."
+)

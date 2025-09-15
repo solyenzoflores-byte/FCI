@@ -85,5 +85,29 @@
       "porcentaje": 0.09237808796372404
     }
   },
-  "distribucion_activos": {}
+  "distribucion_activos": {},
+  "usuarios": {
+    "admin": {
+      "rol": "admin",
+      "salt": "d6abee56a2b088c492d08bdf34202622",
+      "password_hash": "a1c473767bc2c08fc59920d3bec68886cda1477f3fd6252e118b56b7f2e84484",
+      "clientes": []
+    },
+    "enzo": {
+      "rol": "cliente",
+      "salt": "73dd6adf9677284a6f543c3b41284de3",
+      "password_hash": "56c2e48c790658efc983c01e76251e316afc2fcd30bb93c0615596be88063656",
+      "clientes": [
+        "Enzo"
+      ]
+    },
+    "roberto": {
+      "rol": "cliente",
+      "salt": "2b52bbaf40afe26a16ff921fb09699c3",
+      "password_hash": "1f407c8235d01ac19e1f821b780aa66e2bb813d1fa5a3ad71fd6ce2b425a6f7f",
+      "clientes": [
+        "Roberto"
+      ]
+    }
+  }
 }
