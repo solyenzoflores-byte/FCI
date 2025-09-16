@@ -54,6 +54,7 @@ class FondoInversion:
             "composicion_fondo": {},
             "distribucion_activos": {},
             "usuarios": {},
+            "tipo_cambio": 0.0,
         }
 
     def guardar_datos(self) -> None:
@@ -167,6 +168,57 @@ class FondoInversion:
     ) -> float:
         patrimonio = self.get_patrimonio_clientes(clientes_permitidos)
         return sum(info["valor_actual"] for info in patrimonio.values())
+
+    def get_tipo_cambio(self) -> float:
+        tipo_cambio = self.datos.get("tipo_cambio", 0.0)
+        try:
+            tipo_cambio_float = float(tipo_cambio)
+        except (TypeError, ValueError):
+            return 0.0
+        return tipo_cambio_float if tipo_cambio_float > 0 else 0.0
+
+    def get_composicion_detallada(self) -> List[Dict]:
+        composicion = self.datos.get("composicion_fondo", {})
+        tipo_cambio = self.get_tipo_cambio()
+        detalle: List[Dict] = []
+
+        for instrumento, datos in composicion.items():
+            moneda = str(datos.get("moneda", "ARS")).upper()
+            monto_pesos = float(datos.get("monto", 0.0) or 0.0)
+            monto_moneda = datos.get("monto_moneda")
+            if monto_moneda is None:
+                monto_moneda = datos.get("monto_original")
+
+            if moneda == "ARS":
+                if monto_moneda is None:
+                    monto_moneda = monto_pesos
+            elif moneda == "USD":
+                if monto_moneda is None and tipo_cambio:
+                    monto_moneda = monto_pesos / tipo_cambio
+                if monto_moneda is not None and tipo_cambio:
+                    monto_pesos = float(monto_moneda) * tipo_cambio
+            else:
+                if monto_moneda is None:
+                    monto_moneda = monto_pesos
+
+            detalle.append(
+                {
+                    "Instrumento": instrumento,
+                    "Moneda": moneda,
+                    "Monto_moneda": float(monto_moneda)
+                    if monto_moneda is not None
+                    else None,
+                    "Monto_ARS": monto_pesos,
+                }
+            )
+
+        total_en_pesos = sum(item["Monto_ARS"] for item in detalle)
+        for item in detalle:
+            item["Porcentaje"] = (
+                (item["Monto_ARS"] / total_en_pesos * 100) if total_en_pesos else 0.0
+            )
+
+        return detalle
 
 
 # ----------------------------------------------------------------------
@@ -331,6 +383,8 @@ transacciones_filtradas = fondo.get_transacciones_filtradas(clientes_permitidos)
 
 balance_total = fondo.get_balance_total_filtrado(clientes_permitidos)
 valor_cuotaparte = fondo.datos.get("valor_cuotaparte", 0.0)
+tipo_cambio = fondo.get_tipo_cambio()
+valor_total_usd = (balance_total / tipo_cambio) if tipo_cambio else None
 
 clientes_filtrados = fondo.get_clientes_filtrados(clientes_permitidos)
 numero_clientes = len(clientes_filtrados)
@@ -338,16 +392,28 @@ numero_clientes = len(clientes_filtrados)
 cuotapartes_totales = fondo.get_total_cuotapartes_filtradas(clientes_permitidos)
 rendimiento_total, rendimiento_mensual = fondo.calcular_rendimiento_mensualizado()
 
-col1, col2, col3, col4, col5 = st.columns(5)
+col1, col2, col3, col4, col5, col6 = st.columns(6)
 with col1:
-    st.metric("Valor actual", f"${balance_total:,.2f}")
+    st.metric("Valor actual (ARS)", f"${balance_total:,.2f}")
 with col2:
-    st.metric("Clientes visibles", str(numero_clientes))
+    if valor_total_usd is not None:
+        st.metric("Valor actual (USD)", f"US$ {valor_total_usd:,.2f}")
+    else:
+        st.metric("Valor actual (USD)", "—")
 with col3:
-    st.metric("Cuotapartes", f"{cuotapartes_totales:,.4f}")
+    if tipo_cambio:
+        st.metric("Tipo de cambio (ARS/USD)", f"${tipo_cambio:,.2f}")
+    else:
+        st.metric("Tipo de cambio (ARS/USD)", "—")
 with col4:
-    st.metric("Valor de cuotaparte", f"${valor_cuotaparte:,.2f}")
+    st.metric("Clientes visibles", str(numero_clientes))
 with col5:
+    st.metric("Cuotapartes", f"{cuotapartes_totales:,.4f}")
+with col6:
+    st.metric("Valor de cuotaparte", f"${valor_cuotaparte:,.2f}")
+
+col_r1, col_r2, col_r3 = st.columns([1, 2, 1])
+with col_r2:
     color = "#28a745" if rendimiento_mensual >= 0 else "#dc3545"
     st.markdown(
         f"""
@@ -400,7 +466,10 @@ with tab_resumen:
             with col_a:
                 st.metric("Cuotapartes", f"{info['cuotapartes']:,.4f}")
             with col_b:
-                st.metric("Valor actual", f"${info['valor_actual']:,.2f}")
+                st.metric("Valor actual (ARS)", f"${info['valor_actual']:,.2f}")
+                if tipo_cambio:
+                    valor_usd_cliente = info["valor_actual"] / tipo_cambio
+                    st.caption(f"Equivalente: US$ {valor_usd_cliente:,.2f}")
             with col_c:
                 st.metric("Participación", f"{info['porcentaje']:.2f}%")
     else:
@@ -420,15 +489,25 @@ with tab_clientes:
                 for nombre, datos in patrimonio_clientes.items()
             ]
         )
+        if tipo_cambio:
+            df_clientes["Valor actual (USD)"] = (
+                df_clientes["Valor actual"] / tipo_cambio
+            )
         df_clientes = df_clientes.sort_values("Valor actual", ascending=False)
+        columnas = ["Cliente", "Cuotapartes", "Valor actual"]
+        if "Valor actual (USD)" in df_clientes.columns:
+            columnas.append("Valor actual (USD)")
+        columnas.append("Participación (%)")
+        df_clientes = df_clientes[columnas]
+        formato_clientes = {
+            "Cuotapartes": "{:.4f}",
+            "Valor actual": "${:,.2f}",
+            "Participación (%)": "{:.2f}",
+        }
+        if "Valor actual (USD)" in df_clientes.columns:
+            formato_clientes["Valor actual (USD)"] = "US$ {:,.2f}"
         st.dataframe(
-            df_clientes.style.format(
-                {
-                    "Cuotapartes": "{:.4f}",
-                    "Valor actual": "${:,.2f}",
-                    "Participación (%)": "{:.2f}",
-                }
-            ),
+            df_clientes.style.format(formato_clientes),
             use_container_width=True,
         )
     else:
@@ -491,29 +570,47 @@ with tab_historial:
 
 with tab_composicion:
     st.subheader("Composición del fondo")
-    composicion = fondo.datos.get("composicion_fondo", {})
-    if composicion:
-        df_composicion = pd.DataFrame(
-            [
-                {
-                    "Instrumento": instrumento,
-                    "Monto": datos.get("monto", 0.0),
-                    "Porcentaje": datos.get("porcentaje", 0.0),
-                }
-                for instrumento, datos in composicion.items()
-            ]
-        )
+    composicion_detallada = fondo.get_composicion_detallada()
+    if composicion_detallada:
+        df_composicion = pd.DataFrame(composicion_detallada)
         df_composicion = df_composicion.sort_values("Porcentaje", ascending=False)
+
+        def formatear_monto_moneda(fila: pd.Series) -> str:
+            valor = fila.get("Monto_moneda")
+            if pd.isna(valor) or valor is None:
+                return "—"
+            simbolo = "US$" if fila.get("Moneda") == "USD" else "$"
+            return f"{simbolo} {valor:,.2f}"
+
+        df_composicion["Monto en moneda"] = df_composicion.apply(
+            formatear_monto_moneda, axis=1
+        )
+        df_composicion["Monto (ARS)"] = df_composicion["Monto_ARS"]
+        df_composicion["Participación (%)"] = df_composicion["Porcentaje"]
+
+        columnas_mostrar = [
+            "Instrumento",
+            "Moneda",
+            "Monto en moneda",
+            "Monto (ARS)",
+            "Participación (%)",
+        ]
         st.dataframe(
-            df_composicion.style.format(
-                {"Monto": "${:,.2f}", "Porcentaje": "{:.2f}%"}
+            df_composicion[columnas_mostrar].style.format(
+                {"Monto (ARS)": "${:,.2f}", "Participación (%)": "{:.2f}%"}
             ),
             use_container_width=True,
         )
+
+        if tipo_cambio == 0 and (df_composicion["Moneda"] == "USD").any():
+            st.warning(
+                "Carga un tipo de cambio para valorizar correctamente las posiciones en USD."
+            )
+
         fig_comp = px.pie(
             df_composicion,
             names="Instrumento",
-            values="Monto",
+            values="Monto_ARS",
             title="Participación por instrumento",
         )
         fig_comp.update_layout(margin=dict(l=10, r=10, t=50, b=10))

@@ -67,22 +67,28 @@
   ],
   "valor_cuotaparte": 1022.4417730177142,
   "total_cuotapartes": 35736.020342908036,
+  "tipo_cambio": 1000.0,
   "composicion_fondo": {
     "Dólar": {
-      "monto": 16987.0,
-      "porcentaje": 0.06538444084332419
+      "monto": 16987000.0,
+      "porcentaje": 39.55045610963395,
+      "moneda": "USD",
+      "monto_moneda": 16987.0
     },
     "JD": {
       "monto": 994400.0,
-      "porcentaje": 3.827532111296966
+      "porcentaje": 2.3152395099440746,
+      "moneda": "ARS"
     },
     "Pesos": {
       "monto": 24944800.0,
-      "porcentaje": 96.01470535989598
+      "porcentaje": 58.078425711638126,
+      "moneda": "ARS"
     },
     "Opciones Galicia": {
       "monto": 24000.0,
-      "porcentaje": 0.09237808796372404
+      "porcentaje": 0.05587866878384734,
+      "moneda": "ARS"
     }
   },
   "distribucion_activos": {},

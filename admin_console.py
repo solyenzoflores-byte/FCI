@@ -49,7 +49,8 @@ class FondoAdminConsole:
             'total_cuotapartes': 0,
             'composicion_fondo': {},
             'distribucion_activos': {},
-            'usuarios': {}
+            'usuarios': {},
+            'tipo_cambio': 0.0
         }
     
     def guardar_datos(self):
@@ -74,6 +75,10 @@ class FondoAdminConsole:
         print(f"👥 Total Clientes: {len(self.datos['clientes'])}")
         print(f"📋 Total Cuotapartes: {self.datos['total_cuotapartes']:,.2f}")
         print(f"💵 Valor Cuotaparte: ${self.datos['valor_cuotaparte']:,.2f}")
+        if self.datos.get('tipo_cambio', 0):
+            print(f"💱 Tipo de cambio USD/ARS: ${self.datos['tipo_cambio']:,.2f}")
+        else:
+            print("💱 Tipo de cambio USD/ARS: no definido")
         
         if self.datos['clientes']:
             print(f"\n👥 CLIENTES:")
@@ -381,51 +386,105 @@ class FondoAdminConsole:
         Formato: 'Instrumento1:monto1,Instrumento2:monto2,...'
         """
         try:
-            composicion_nueva = {}
-            items = composicion_input.split(',')
-            
+            composicion_procesada = []
+            items = [item.strip() for item in composicion_input.split(',') if item.strip()]
+
             for item in items:
-                if ':' not in item:
-                    print(f"❌ Formato incorrecto: {item}. Use 'Instrumento:monto'")
+                partes = [p.strip() for p in item.split(':')]
+                if len(partes) < 2:
+                    print(f"❌ Formato incorrecto: {item}. Use 'Instrumento:monto[:moneda]'")
                     return False
-                
-                instrumento, monto_str = item.split(':', 1)
-                instrumento = instrumento.strip()
-                monto = float(monto_str.strip())
-                
-                if monto > 0:
-                    composicion_nueva[instrumento] = monto
-            
-            if not composicion_nueva:
+                if len(partes) > 3:
+                    print(f"❌ Formato incorrecto: {item}. Máximo tres componentes 'Instrumento:monto:moneda'")
+                    return False
+
+                instrumento = partes[0]
+                monto = float(partes[1])
+                moneda = partes[2].upper() if len(partes) == 3 and partes[2] else 'ARS'
+
+                if monto <= 0:
+                    continue
+
+                if moneda not in {'ARS', 'USD'}:
+                    print(f"⚠️  Moneda '{moneda}' no reconocida. Se asumirá en pesos (ARS).")
+                    moneda = 'ARS'
+
+                composicion_procesada.append((instrumento, monto, moneda))
+
+            if not composicion_procesada:
                 print("❌ No se encontraron instrumentos válidos")
                 return False
-            
-            # Calcular porcentajes
-            total_monto = sum(composicion_nueva.values())
+
+            tipo_cambio = self.datos.get('tipo_cambio', 0.0) or 0.0
             composicion_completa = {}
-            
-            for instrumento, monto in composicion_nueva.items():
-                porcentaje = (monto / total_monto * 100) if total_monto > 0 else 0
-                composicion_completa[instrumento] = {
-                    'monto': monto,
-                    'porcentaje': porcentaje
+            total_en_pesos = 0.0
+            composicion_intermedia = []
+
+            for instrumento, monto, moneda in composicion_procesada:
+                if moneda == 'USD':
+                    if tipo_cambio <= 0:
+                        print("❌ Debe configurar el tipo de cambio (💱) antes de cargar montos en USD.")
+                        return False
+                    monto_en_pesos = monto * tipo_cambio
+                    composicion_intermedia.append((instrumento, monto_en_pesos, moneda, monto))
+                else:
+                    monto_en_pesos = monto
+                    composicion_intermedia.append((instrumento, monto_en_pesos, moneda, None))
+                total_en_pesos += monto_en_pesos
+
+            if total_en_pesos <= 0:
+                print("❌ El total de la composición debe ser mayor a 0")
+                return False
+
+            for instrumento, monto_en_pesos, moneda, monto_moneda in composicion_intermedia:
+                porcentaje = (monto_en_pesos / total_en_pesos * 100) if total_en_pesos else 0
+                registro = {
+                    'monto': monto_en_pesos,
+                    'porcentaje': porcentaje,
+                    'moneda': moneda
                 }
-            
+                if moneda == 'USD' and monto_moneda is not None:
+                    registro['monto_moneda'] = monto_moneda
+                composicion_completa[instrumento] = registro
+
             self.datos['composicion_fondo'] = composicion_completa
-            
+
             print("✅ Composición actualizada:")
             for instrumento, datos in composicion_completa.items():
-                print(f"  • {instrumento}: ${datos['monto']:,.2f} ({datos['porcentaje']:.1f}%)")
-            
+                moneda = datos.get('moneda', 'ARS')
+                porcentaje = datos.get('porcentaje', 0.0)
+                monto_pesos = datos.get('monto', 0.0)
+                if moneda == 'USD' and 'monto_moneda' in datos:
+                    monto_moneda = datos['monto_moneda']
+                    print(f"  • {instrumento}: US$ {monto_moneda:,.2f} (=${monto_pesos:,.2f}) ({porcentaje:.1f}%)")
+                else:
+                    print(f"  • {instrumento}: ${monto_pesos:,.2f} ({porcentaje:.1f}%)")
+
             return True
-            
+
         except ValueError as e:
             print(f"❌ Error en formato de montos: {e}")
             return False
         except Exception as e:
             print(f"❌ Error actualizando composición: {e}")
             return False
-    
+
+    def actualizar_tipo_cambio(self, tipo_cambio: float):
+        """Actualiza el valor del tipo de cambio USD/ARS"""
+        try:
+            tipo_cambio = float(tipo_cambio)
+        except (TypeError, ValueError):
+            print("❌ Tipo de cambio inválido")
+            return False
+
+        if tipo_cambio <= 0:
+            print("❌ El tipo de cambio debe ser mayor a 0")
+            return False
+
+        self.datos['tipo_cambio'] = tipo_cambio
+        print(f"✅ Tipo de cambio actualizado a ${tipo_cambio:,.2f} (ARS por USD)")
+        return True
+
     def menu_interactivo(self):
         """Menu interactivo para operaciones"""
         while True:
@@ -439,8 +498,9 @@ class FondoAdminConsole:
             print("5. ⬇️  Registrar rescate")
             print("6. 📈 Actualizar composición")
             print("7. 👤 Administrar usuarios")
-            print("8. 💾 Guardar datos")
-            print("9. 🚪 Salir")
+            print("8. 💱 Actualizar tipo de cambio")
+            print("9. 💾 Guardar datos")
+            print("10. 🚪 Salir")
             print("="*40)
             
             try:
@@ -480,8 +540,9 @@ class FondoAdminConsole:
                     self.rescate(cliente, monto)
                 
                 elif opcion == '6':
-                    print("Formato: 'Instrumento1:monto1,Instrumento2:monto2,...'")
-                    print("Ejemplo: 'Bonos:10000,Acciones:15000,FCI:5000'")
+                    print("Formato: 'Instrumento1:monto1[:moneda1],Instrumento2:monto2[:moneda2],...'")
+                    print("Ejemplo: 'Bonos:10000,Acciones:15000,USD Liquidez:10:USD'")
+                    print("Si no se indica moneda se asume pesos (ARS).")
                     composicion = input("Composición: ").strip()
                     if composicion:
                         self.actualizar_composicion(composicion)
@@ -490,9 +551,13 @@ class FondoAdminConsole:
                     self.menu_usuarios()
 
                 elif opcion == '8':
-                    self.guardar_datos()
+                    valor = float(input("Nuevo tipo de cambio (ARS por USD): "))
+                    self.actualizar_tipo_cambio(valor)
 
                 elif opcion == '9':
+                    self.guardar_datos()
+
+                elif opcion == '10':
                     print("👋 ¡Hasta luego!")
                     break
 
@@ -523,7 +588,9 @@ def main():
     parser.add_argument('--rescate', nargs=2, metavar=('CLIENTE', 'MONTO'),
                        help='Registrar rescate: --rescate "Juan Perez" 2000')
     parser.add_argument('--composicion',
-                       help='Actualizar composición: --composicion "Bonos:10000,Acciones:15000"')
+                       help="Actualizar composición (formato 'Instrumento:monto[:moneda]'). Ej: --composicion \"Bonos:10000,USD Liquidez:10:USD\"")
+    parser.add_argument('--tipo-cambio', type=float,
+                       help='Actualizar tipo de cambio (ARS por USD)')
     parser.add_argument('--estado', action='store_true',
                        help='Mostrar estado actual del fondo')
     parser.add_argument('--crear-usuario', metavar='USUARIO',
@@ -564,10 +631,14 @@ def main():
         cliente, monto = args.rescate
         admin.rescate(cliente, float(monto))
         cambios_realizados = True
-    
+
     if args.composicion:
         admin.actualizar_composicion(args.composicion)
         cambios_realizados = True
+
+    if args.tipo_cambio is not None:
+        if admin.actualizar_tipo_cambio(args.tipo_cambio):
+            cambios_realizados = True
 
     if args.crear_usuario:
         password = args.password
@@ -615,6 +686,7 @@ def main():
         args.suscripcion,
         args.rescate,
         args.composicion,
+        args.tipo_cambio is not None,
         args.estado,
         args.crear_usuario,
         args.reset_password,
